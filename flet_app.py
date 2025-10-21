@@ -61,16 +61,38 @@ def main(page: ft.Page):
     server = ServerProcess(script_path)
 
     log_view = ft.ListView(expand=True, spacing=4, auto_scroll=True)
-
+    advanced_log_view = ft.ListView(expand=True, spacing=4, auto_scroll=True)
+    
+    # Toggle para logs simples/avançados
+    show_advanced_logs = ft.Ref[ft.Switch]()
+    current_log_view = ft.Ref[ft.Container]()
+    
     status_badge = ft.Chip(label=ft.Text("Parado"), color=ft.Colors.RED_400)
 
-    def append_log(line, level="INFO"):
-        # Exibir no terminal também
+    def append_simple_log(message, status="success"):
+        """Adiciona log simplificado para o usuário"""
+        icon = ft.Icons.CHECK_CIRCLE if status == "success" else ft.Icons.ERROR if status == "error" else ft.Icons.INFO
+        color = ft.Colors.GREEN_600 if status == "success" else ft.Colors.RED_600 if status == "error" else ft.Colors.BLUE_600
+        
+        log_view.controls.append(
+            ft.Row(
+                [
+                    ft.Icon(icon, color=color, size=20),
+                    ft.Text(message, size=14, weight=ft.FontWeight.W_500),
+                ],
+                alignment=ft.MainAxisAlignment.START,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            )
+        )
+        page.update()
+
+    def append_advanced_log(line, level="INFO"):
+        """Adiciona log técnico detalhado"""
         timestamp = time.strftime("%H:%M:%S")
         print(f"[{timestamp}] [{level}] {line.rstrip()}")
         
         color = ft.Colors.BLUE_800 if level == "INFO" else ft.Colors.RED_700
-        log_view.controls.append(
+        advanced_log_view.controls.append(
             ft.Row(
                 [
                     ft.Container(
@@ -79,13 +101,34 @@ def main(page: ft.Page):
                         bgcolor=color,
                         border_radius=4,
                     ),
-                    ft.Text(line.rstrip(), selectable=True),
+                    ft.Text(line.rstrip(), selectable=True, size=12),
                 ],
                 alignment=ft.MainAxisAlignment.START,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             )
         )
         page.update()
+
+    def append_log(line, level="INFO"):
+        """Função principal que decide qual tipo de log usar"""
+        # Sempre adiciona ao log avançado
+        append_advanced_log(line, level)
+        
+        # Adiciona ao log simples apenas se for relevante para o usuário
+        if "Servidor Flask iniciado com sucesso" in line:
+            append_simple_log("✅ Servidor iniciado com sucesso", "success")
+        elif "Servidor Flask parado" in line:
+            append_simple_log("⏹️ Servidor parado", "info")
+        elif "Resposta: 200 Imprimindo" in line:
+            append_simple_log("✅ Senha impressa com sucesso na impressora", "success")
+        elif "Resposta: 200" in line and "Imprimindo" in line:
+            append_simple_log("✅ Senha enviada para impressora com sucesso", "success")
+        elif "Erro ao imprimir" in line or "Falha ao chamar" in line:
+            append_simple_log("❌ Falha ao enviar senha para impressora", "error")
+        elif "HTTPConnectionPool" in line or "Failed to establish" in line:
+            append_simple_log("❌ Servidor não está respondendo", "error")
+        elif "ERROR" in line or "Traceback" in line:
+            append_simple_log("⚠️ Erro no sistema", "error")
 
     stop_flag = threading.Event()
 
@@ -104,23 +147,28 @@ def main(page: ft.Page):
     reader_thread = threading.Thread(target=reader_loop, daemon=True)
     reader_thread.start()
 
-    def handle_start(e):
+    def auto_start_server():
+        """Inicia o servidor automaticamente"""
         if not os.path.exists(script_path):
             append_log("printer_app.py não encontrado no diretório atual.", level="ERROR")
             return
-        append_log("Iniciando servidor Flask...", level="INFO")
+        append_log("Iniciando servidor Flask automaticamente...", level="INFO")
         server.start()
         status_badge.label = ft.Text("Em execução")
         status_badge.color = ft.Colors.GREEN_400
         append_log("Servidor Flask iniciado com sucesso!", level="INFO")
         page.update()
 
-    def handle_stop(e):
-        append_log("Parando servidor Flask...", level="INFO")
-        server.stop()
-        status_badge.label = ft.Text("Parado")
-        status_badge.color = ft.Colors.RED_400
-        append_log("Servidor Flask parado.", level="INFO")
+    def toggle_logs(e):
+        """Alterna entre logs simples e avançados"""
+        if show_advanced_logs.current.value:
+            # Mostrar logs avançados
+            current_log_view.current.content = advanced_log_view
+            current_log_view.current.bgcolor = ft.Colors.GREY_100
+        else:
+            # Mostrar logs simples
+            current_log_view.current.content = log_view
+            current_log_view.current.bgcolor = ft.Colors.WHITE
         page.update()
 
     def call_endpoint(path, params=None):
@@ -128,6 +176,14 @@ def main(page: ft.Page):
         append_log(f"Chamando endpoint: {url}", level="INFO")
         if params:
             append_log(f"Parâmetros: {params}", level="INFO")
+        
+        # Log específico para impressão
+        if "/imprimir" in path:
+            if "/qrcode" in path:
+                append_simple_log("📤 Enviando senha com QR Code para impressora...", "info")
+            else:
+                append_simple_log("📤 Enviando senha para impressora...", "info")
+        
         try:
             r = requests.get(url, params=params or {}, timeout=10)
             append_log(f"Resposta: {r.status_code} {r.text}")
@@ -162,10 +218,25 @@ def main(page: ft.Page):
         }
         call_endpoint("/imprimir/qrcode", params)
 
+    # Toggle de logs
+    log_toggle = ft.Row(
+        [
+            ft.Text("Logs Simples", size=12),
+            ft.Switch(
+                ref=show_advanced_logs,
+                on_change=toggle_logs,
+                value=False,
+                active_color=ft.Colors.BLUE_600,
+            ),
+            ft.Text("Logs Avançados", size=12),
+        ],
+        alignment=ft.MainAxisAlignment.CENTER,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+    )
+
     controls_bar = ft.Row(
         [
-            ft.ElevatedButton("Iniciar servidor", icon=ft.Icons.PLAY_ARROW, on_click=handle_start),
-            ft.OutlinedButton("Parar servidor", icon=ft.Icons.STOP, on_click=handle_stop),
+            ft.Text("🖥️ Servidor Flask", size=16, weight=ft.FontWeight.BOLD),
             status_badge,
             ft.Container(expand=True),
             ft.FilledTonalButton("Testar impressão", icon=ft.Icons.PRINT, on_click=handle_test_print),
@@ -188,21 +259,55 @@ def main(page: ft.Page):
         alignment=ft.MainAxisAlignment.START,
     )
 
+    # Container de logs com toggle
+    log_container = ft.Container(
+        content=log_view,
+        ref=current_log_view,
+        padding=12,
+        expand=True,
+        bgcolor=ft.Colors.WHITE,
+    )
+
     page.add(
         ft.Column(
             [
                 controls_bar,
                 ft.Card(ft.Container(content=form, padding=12)),
-                ft.Card(ft.Container(content=log_view, padding=0, expand=True)),
+                ft.Card(
+                    ft.Column(
+                        [
+                            ft.Row(
+                                [
+                                    ft.Text("📋 Logs do Sistema", size=16, weight=ft.FontWeight.BOLD),
+                                    ft.Container(expand=True),
+                                    log_toggle,
+                                ],
+                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                            ),
+                            ft.Divider(height=1),
+                            log_container,
+                        ],
+                        expand=True,
+                        spacing=0,
+                    ),
+                    expand=True,
+                ),
             ],
             expand=True,
             spacing=10,
         )
     )
     
-    # Log inicial
+    # Log inicial e início automático do servidor
     append_log("=== Cliente de Impressão de Senhas ===", level="INFO")
-    append_log("Interface Flet carregada. Use os controles acima para gerenciar o servidor.", level="INFO")
+    append_log("Interface Flet carregada. Iniciando servidor automaticamente...", level="INFO")
+    
+    # Inicia o servidor automaticamente após um pequeno delay
+    def delayed_start():
+        time.sleep(1)  # Aguarda 1 segundo para a interface carregar
+        auto_start_server()
+    
+    threading.Thread(target=delayed_start, daemon=True).start()
 
     def on_close(e):
         stop_flag.set()
